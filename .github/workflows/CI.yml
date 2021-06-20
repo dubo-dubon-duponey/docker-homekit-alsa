@@ -1,0 +1,53 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-20.04
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      - name: Checks-out repository
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - name: Enable cache
+        uses: actions/cache@v2.1.1
+        with:
+          path: $GITHUB_WORKSPACE/cache
+          key: cache
+
+        # XXX move to container tooling
+      - name: Install hadolint
+        run: |
+          curl --proto '=https' --tlsv1.3 -sSfL -o hadolint "https://github.com/hadolint/hadolint/releases/download/v2.5.0/hadolint-$(uname -s)-$(uname -m)"
+          chmod 700 ./hadolint
+
+      # XXX update this to a more recent apt proxy
+      - name: Start apt proxy
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/cache/apt"
+          chmod a+rwx "$GITHUB_WORKSPACE/cache/apt"
+          docker run --rm -d --pull always \
+            --name apt-cache \
+            --read-only \
+            --cap-drop=ALL \
+            --expose 3142 \
+            --volume $GITHUB_WORKSPACE/cache/apt:/data \
+              dubodubonduponey/aptutil:buster-2020-08-01
+
+      - name: test
+        run: |
+          # Hiding the read-only token base64 to avoid github disabling it...
+          echo OWMyMGVhYzk4N2NhYWQxYmI3MzhmNTZkODNmOGMwOGJjZjlhNDc4YQo= | base64 -d | docker login ghcr.io -u dubo-dubon-duponey --password-stdin
+          # Set the path
+          export BIN_LOCATION="."
+          PATH="$BIN_LOCATION:$PATH"
+          cd "$GITHUB_WORKSPACE"
+          # Lint
+          ./hack/lint.sh
+          # Test, with our injected proxy and environment
+          ./hack/test.sh --inject apt_proxy="http://$(docker inspect apt-cache | jq -rc .[0].NetworkSettings.Networks.bridge.IPAddress):3142" ".github/workflows/environment.cue"
